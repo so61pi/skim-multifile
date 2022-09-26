@@ -1,6 +1,12 @@
-use std::{path::PathBuf, fs::File, io::{BufReader, BufRead}};
-
+use clap::Parser;
+use itertools::Itertools;
 use skim::prelude::*;
+use std::thread;
+use std::{
+    fs::File,
+    io::{BufRead, BufReader},
+    path::PathBuf,
+};
 
 struct CustomItem {
     /// Group of item. The smaller the better score.
@@ -36,16 +42,16 @@ impl MatchEngine for CustomEngine {
         let mut result = self.inner.match_item(item.clone());
         if let Some(item) = (*item).as_any().downcast_ref::<CustomItem>() {
             if let Some(result) = &mut result {
-                result.rank[0] = result.rank[0] + item.group;
+                result.rank[0] += item.group;
             }
         }
-        return result;
+        result
     }
 }
 
 impl std::fmt::Display for CustomEngine {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "(CustomEngine: {})", self.inner.to_string())
+        write!(f, "(CustomEngine: {})", self.inner)
     }
 }
 
@@ -69,8 +75,6 @@ impl MatchEngineFactory for CustomEngineFactory {
     }
 }
 
-use clap::{Parser, Subcommand};
-
 #[derive(Parser)]
 #[command(author, version, about, long_about = None)]
 struct CliOptions {
@@ -81,7 +85,7 @@ struct CliOptions {
     min_height: String,
 
     #[arg(long)]
-    no_height: Option<String>,
+    no_height: bool,
 
     #[arg(long, default_value_t = String::from("100%"))]
     height: String,
@@ -105,34 +109,37 @@ struct CliOptions {
     expect: Option<String>,
 
     #[arg(long)]
-    multi: Option<String>,
+    multi: bool,
 
     #[arg(long, default_value_t = String::from("default"))]
     layout: String,
 
     #[arg(long)]
-    reverse: Option<String>,
+    reverse: bool,
 
     #[arg(long)]
-    no_hscroll: Option<String>,
+    no_hscroll: bool,
 
     #[arg(long)]
-    no_mouse: Option<String>,
+    no_mouse: bool,
 
     #[arg(long)]
-    no_clear: Option<String>,
+    no_clear: bool,
 
     #[arg(long)]
     tabstop: Option<String>,
 
     #[arg(long)]
-    tac: Option<String>,
+    tac: bool,
 
     #[arg(long)]
-    nosort: Option<String>,
+    nosort: bool,
 
     #[arg(long)]
-    inline_info: Option<String>,
+    tiebreak: Option<String>,
+
+    #[arg(long)]
+    inline_info: bool,
 
     #[arg(long)]
     header: Option<String>,
@@ -144,98 +151,124 @@ struct CliOptions {
     case: Option<String>,
 
     #[arg(long)]
-    keep_right: Option<String>,
+    keep_right: bool,
 
     #[arg(long)]
     skip_to_pattern: Option<String>,
 
     #[arg(long)]
-    select1: Option<String>,
+    select1: bool,
 
     #[arg(long)]
-    exit0: Option<String>,
+    exit0: bool,
 
+    #[arg(required = true)]
     file: Vec<PathBuf>,
 }
 
-fn parse_options(options: &CliOptions) -> SkimOptions {
+fn to_skim_options(options: &CliOptions) -> SkimOptions {
     SkimOptionsBuilder::default()
         .engine_factory(Some(Rc::new(CustomEngineFactory::new())))
-        .color(options.color.as_ref().map(|v| v.as_str()))
+        .color(options.color.as_deref())
         .min_height(Some(options.min_height.as_str()))
-        .no_height(options.no_height.is_some())
+        .no_height(options.no_height)
         .height(Some(options.height.as_str()))
         .margin(Some(options.margin.as_str()))
-        .preview(options.preview.as_ref().map(|v| v.as_str()))
-        .cmd(options.cmd.as_ref().map(|v| v.as_str()))
-        .query(options.query.as_ref().map(|v| v.as_str()))
-        .prompt(options.prompt.as_ref().map(|v| v.as_str()))
+        .preview(options.preview.as_deref())
+        .cmd(options.cmd.as_deref())
+        .query(options.query.as_deref())
+        .prompt(options.prompt.as_deref())
         .expect(options.expect.clone())
-        .multi(options.multi.is_some())
+        .multi(options.multi)
         .layout(&options.layout)
-        .reverse(options.reverse.is_some())
-        .no_hscroll(options.no_hscroll.is_some())
-        .no_mouse(options.no_mouse.is_some())
-        .no_clear(options.no_clear.is_some())
-        .tabstop(options.tabstop.as_ref().map(|v| v.as_str()))
-        .tac(options.tac.is_some())
-        .nosort(options.nosort.is_some())
-        .inline_info(options.inline_info.is_some())
-        .header(options.header.as_ref().map(|v| v.as_str()))
+        .reverse(options.reverse)
+        .no_hscroll(options.no_hscroll)
+        .no_mouse(options.no_mouse)
+        .no_clear(options.no_clear)
+        .tabstop(options.tabstop.as_deref())
+        .tac(options.tac)
+        .nosort(options.nosort)
+        .tiebreak(options.tiebreak.clone())
+        .inline_info(options.inline_info)
+        .header(options.header.as_deref())
         .header_lines(options.header_lines.unwrap_or_default())
-        .case(options.case.as_ref().map(|v| match v.as_str() {
-            "smart" => CaseMatching::Smart,
-            "ignore" => CaseMatching::Ignore,
-            _ => CaseMatching::Respect,
-        }).unwrap_or(CaseMatching::Respect))
-        .keep_right(options.keep_right.is_some())
-        .skip_to_pattern(options.skip_to_pattern.as_ref().map(|v| v.as_str()).unwrap_or_default())
-        .select1(options.select1.is_some())
-        .exit0(options.exit0.is_some())
+        .case(
+            options
+                .case
+                .as_ref()
+                .map(|v| match v.as_str() {
+                    "smart" => CaseMatching::Smart,
+                    "ignore" => CaseMatching::Ignore,
+                    _ => CaseMatching::Respect,
+                })
+                .unwrap_or(CaseMatching::Respect),
+        )
+        .keep_right(options.keep_right)
+        .skip_to_pattern(options.skip_to_pattern.as_deref().unwrap_or_default())
+        .select1(options.select1)
+        .exit0(options.exit0)
         .build()
         .unwrap()
 }
 
-use std::thread;
-
-fn reader(filepaths: Vec<PathBuf>) -> SkimItemReceiver {
-    let (tx_item, rx_item): (SkimItemSender, SkimItemReceiver) = bounded(1024);
-
-    thread::spawn(move || {
-        for (i2, filepath) in filepaths.iter().enumerate().map(|(i, v)| (2*i, v)) {
-            let file = File::open(filepath).expect(&format!("{} could not be opened", filepath.to_string_lossy()));
-            let reader = BufReader::new(file);
-
-            for line in reader.lines() {
-                tx_item.send(Arc::new(CustomItem {
-                    group: i2 as i32 * 10000,
-                    persist: false,
-                    inner: line.unwrap().to_string(),
-                })).unwrap();
+fn read_files_to_skim_items<'a, I>(filepaths: I, tx: SkimItemSender)
+where
+    I: IntoIterator<Item = &'a PathBuf>,
+{
+    filepaths
+        .into_iter()
+        .map(itertools::Either::Left)
+        .intersperse(itertools::Either::Right(()))
+        .enumerate()
+        .map(|(i, v)| (10000 * i as i32, v))
+        .for_each(|(group, v)| match v {
+            itertools::Either::Left(filepath) => {
+                let file = File::open(filepath).unwrap_or_else(|_| {
+                    panic!("{} could not be opened", filepath.to_string_lossy())
+                });
+                let reader = BufReader::new(file);
+                for line in reader.lines() {
+                    tx.send(Arc::new(CustomItem {
+                        group,
+                        persist: false,
+                        inner: line.unwrap().to_string(),
+                    }))
+                    .unwrap();
+                }
             }
-
-            tx_item.send(Arc::new(CustomItem {
-                group: (i2+1) as i32 * 10000,
-                persist: true,
-                inner: String::from("---"),
-            })).unwrap();
-        }
-    });
-
-    return rx_item;
+            itertools::Either::Right(_) => {
+                tx.send(Arc::new(CustomItem {
+                    group,
+                    persist: true,
+                    inner: String::from("---"),
+                }))
+                .unwrap();
+            }
+        });
 }
 
-
 pub fn main() {
-    let cli = CliOptions::parse();
-    let options = parse_options(&cli);
-    let rx_item = reader(cli.file.clone());
+    let options = CliOptions::parse();
+    let skim_options = to_skim_options(&options);
 
-    let selected_items = Skim::run_with(&options, Some(rx_item))
-        .map(|out| out.selected_items)
-        .unwrap_or_else(|| Vec::new());
+    let (tx, rx): (SkimItemSender, SkimItemReceiver) = bounded(1024);
+    thread::scope(|s| {
+        s.spawn(|| {
+            read_files_to_skim_items(options.file.iter(), tx);
+        });
 
-    for item in selected_items.iter() {
-        print!("{}{}", item.output(), "\n");
-    }
+        let selected_items = Skim::run_with(&skim_options, Some(rx))
+            .map(|out| {
+                if out.is_abort {
+                    Vec::new()
+                } else {
+                    out.selected_items
+                }
+            })
+            .unwrap_or_else(Vec::new);
+
+        for item in selected_items.iter() {
+            println!("{} | ", item.output());
+        }
+    });
 }

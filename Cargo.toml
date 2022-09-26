@@ -1,5 +1,5 @@
 [package]
-name = "skimex"
+name = "skim-multifile"
 version = "0.1.0"
 edition = "2021"
 
@@ -8,3 +8,4 @@ edition = "2021"
 [dependencies]
 clap = { version = "4.0.0-rc.2", features = ["derive"] }
 skim = "0.9"
+itertools = "0.10"
