@@ -268,7 +268,7 @@ pub fn main() {
             .unwrap_or_else(Vec::new);
 
         for item in selected_items.iter() {
-            println!("{} | ", item.output());
+            println!("{}", item.output());
         }
     });
 }
